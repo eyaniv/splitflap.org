@@ -582,6 +582,9 @@
         weatherPeriodIndex = 0,
         isLocked = false;
       let pendingApproval = false;
+      // The first/local board is permanent and never needs the pairing screen.
+      const FIRST_BOARD_ID = "LCL836";
+      let isPrimaryBoard = false;
 
       const boardWrapper = document.getElementById("vestaboard-wrapper");
       const boardArea = document.getElementById("board-area");
@@ -951,34 +954,46 @@
         scheduleAction(mx + 50, () => {});
         startAnimLoop();
       }
-
-      function playSequence() {
-        stopLiveModes();
-        if (sequenceTimer) {
-          clearTimeout(sequenceTimer);
-          sequenceTimer = null;
-        }
-        const msgs = parseMessages();
-        if (!msgs.length) return;
-        function go(i) {
-          if (i >= msgs.length) {
-            if (S.loopSequence) setTimeout(() => go(0), S.msgDelay);
-            return;
-          }
-          currentMsgIdx = i;
-          flipToTarget(messageToGrid(msgs[i]), () => {
-            sequenceTimer = setTimeout(() => go(i + 1), S.msgDelay);
-          });
-        }
-        if (currentMsgIdx !== -1) {
-          cancelAnimLoop();
-          isFlipping = false;
-          currentMsgIdx = -1;
-          flipToTarget(blankGrid(), () => {
-            setTimeout(() => go(0), S.msgDelay);
-          });
-        } else go(0);
-      }
+		function playSequence() {
+		  stopLiveModes();
+		
+		  if (sequenceTimer) {
+			clearTimeout(sequenceTimer);
+			sequenceTimer = null;
+		  }
+		
+		  function go(i) {
+			// Re-read the current message list every time we advance.
+			const msgs = parseMessages();
+		
+			if (!msgs.length) return;
+		
+			if (i >= msgs.length) {
+			  if (S.loopSequence) {
+				sequenceTimer = setTimeout(() => go(0), S.msgDelay);
+			  }
+			  return;
+			}
+		
+			currentMsgIdx = i;
+		
+			flipToTarget(messageToGrid(msgs[i]), () => {
+			  sequenceTimer = setTimeout(() => go(i + 1), S.msgDelay);
+			});
+		  }
+		
+		  if (currentMsgIdx !== -1) {
+			cancelAnimLoop();
+			isFlipping = false;
+			currentMsgIdx = -1;
+		
+			flipToTarget(blankGrid(), () => {
+			  setTimeout(() => go(0), S.msgDelay);
+			});
+		  } else {
+			go(0);
+		  }
+		}
       function flipToNext() {
         stopLiveModes();
         const msgs = parseMessages();
@@ -1539,13 +1554,14 @@
           lbl.style.color = "#22c55e";
           dot.className = "sb-dot live";
         } else {
-          lbl.textContent = "No companion";
-          lbl.style.color = "#555";
-          dot.className = "sb-dot";
+          lbl.textContent = isPrimaryBoard ? "" : "No companion";
+          lbl.style.color = isPrimaryBoard ? "#22c55e" : "#555";
+          dot.className = isPrimaryBoard ? "sb-dot live" : "sb-dot";
         }
       }
 
       function showPairScreen(code, secret) {
+        if (isPrimaryBoard || code === FIRST_BOARD_ID) return;
         const url = `${location.origin}/companion.html#${code}.${secret}`;
         generateQR(url);
         document.getElementById("display-code").textContent = code;
@@ -1612,8 +1628,16 @@
             case "registered":
               boardId = msg.boardId;
               boardSecret = msg.secret;
-              showPairScreen(boardId, boardSecret);
-              setCompanionState(false);
+              isPrimaryBoard = msg.primary === true || boardId === FIRST_BOARD_ID;
+              if (isPrimaryBoard) {
+                hidePairScreen();
+                hideApproval();
+                setCompanionState(false);
+                playSequence();
+              } else {
+                showPairScreen(boardId, boardSecret);
+                setCompanionState(false);
+              }
               break;
             case "reconnected":
               boardId = msg.boardId;
@@ -1626,16 +1650,36 @@
               applySettings(true);
               if (boardMode === "clock") startClock();
               else if (boardMode === "weather") startWeather();
+              isPrimaryBoard = msg.primary === true || boardId === FIRST_BOARD_ID;
               if (msg.locked) {
                 setCompanionState(true);
                 hidePairScreen();
+              } else if (isPrimaryBoard) {
+                setCompanionState(false);
+                hidePairScreen();
+                hideApproval();
+                playSequence();
               } else {
                 setCompanionState(false);
                 showPairScreen(boardId, boardSecret);
               }
               break;
             case "pair_request":
-              showApproval();
+              isPrimaryBoard = msg.primary === true || boardId === FIRST_BOARD_ID;
+              if (isPrimaryBoard) {
+                setCompanionState(true);
+                hidePairScreen();
+                hideApproval();
+                ws.send(JSON.stringify({ type: "approve_pair" }));
+                getAudioCtx();
+                const pm =
+                  S.rows >= 3
+                    ? "\n🟩  SILENT  PAIRED!  🟩"
+                    : "🟩 SILENT PAIRED! 🟩";
+                flipSystemMessage(pm);
+              } else {
+                showApproval();
+              }
               break;
             case "pair_rejected":
               hideApproval();
@@ -1653,22 +1697,41 @@
               break;
             case "companion_disconnected":
               setCompanionState(false);
-              flipSystemMessage("\nDISCONNECTED");
+              if (isPrimaryBoard) {
+                hidePairScreen();
+                hideApproval();
+              } else {
+                flipSystemMessage("\nDISCONNECTED");
+              }
               break;
             case "companion_disconnected_new_code":
               setCompanionState(false);
               boardId = msg.boardId;
               boardSecret = msg.secret;
-              flipSystemMessage("\nDISCONNECTED");
-              setTimeout(() => {
-                showPairScreen(boardId, boardSecret);
-              }, 2500);
+              isPrimaryBoard = msg.primary === true || boardId === FIRST_BOARD_ID;
+              if (isPrimaryBoard) {
+                hidePairScreen();
+                hideApproval();
+              } else {
+                flipSystemMessage("\nDISCONNECTED");
+                setTimeout(() => {
+                  showPairScreen(boardId, boardSecret);
+                }, 2500);
+              }
               break;
             case "new_code":
               boardId = msg.boardId;
               boardSecret = msg.secret;
-              showPairScreen(boardId, boardSecret);
-              setCompanionState(false);
+              isPrimaryBoard = msg.primary === true || boardId === FIRST_BOARD_ID;
+              if (isPrimaryBoard) {
+                hidePairScreen();
+                hideApproval();
+                setCompanionState(false);
+                playSequence();
+              } else {
+                showPairScreen(boardId, boardSecret);
+                setCompanionState(false);
+              }
               break;
             case "update_settings":
               if (msg.settings && typeof msg.settings === "object") {
