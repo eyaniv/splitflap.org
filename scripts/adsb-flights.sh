@@ -5,7 +5,7 @@ set -euo pipefail
 # ADS-B.lol point query centered on the split-flap location.
 LATITUDE="43.7398976"
 LONGITUDE="-116.3878331"
-RADIUS_KM="15"
+RADIUS_KM="7"
 
 # Split-flap API settings. Override these with environment variables if desired.
 SPLITFLAP_API_BASE="${SPLITFLAP_API_BASE:-http://localhost:3000}"
@@ -54,7 +54,7 @@ send_flight() {
 
   # Keep the display compact. ADS-B distance is in nautical miles in the
   # API response, so label it as NM rather than implying statute miles.
-  local text="${flight} ${type} ${distance}nm"
+  local text=${flight}$'\n'"Type "${type}$'\n'${distance}" nm"
 
   local payload
   payload=$(jq -n \
