@@ -891,7 +891,7 @@ app.get("/api/board/:boardId/play", (req, res) => {
   });
 });
 
-// Get persistent API-managed messages for a board.
+// Get runtime API-managed messages for a board.
 //
 // GET /api/board/ABC123/messages
 app.get("/api/board/:boardId/messages", (req, res) => {
@@ -1008,7 +1008,6 @@ app.post("/api/board/:boardId/messages", (req, res) => {
   sendApiMessages(result.board, result.id);
 
   result.board.lastActive = Date.now();
-  savePrimaryState(result.board);
 
   res.json({
     ok: true,
@@ -1017,7 +1016,7 @@ app.post("/api/board/:boardId/messages", (req, res) => {
   });
 });
 
-// Remove a persistent automation message.
+// Remove a runtime automation message.
 //
 // DELETE /api/board/ABC123/messages/garage
 app.delete(
@@ -1069,7 +1068,6 @@ app.delete(
     ) {
       sendApiMessages(board, boardId);
       board.lastActive = Date.now();
-      savePrimaryState(board);
     }
 
     res.json({
