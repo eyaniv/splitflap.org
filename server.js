@@ -41,11 +41,52 @@ const boards = new Map();
 const API_SECRET = process.env.SPLITFLAP_API_SECRET || "";
 
 // Map of:
-//   boardId -> Map(messageId -> { id, text })
+//   boardId -> Map(messageId -> { id, text, expiresAt })
 //
 // Each board therefore has its own independent set of
-// persistent home-automation messages.
+// home-automation messages. Messages with expiresAt are
+// automatically removed when their TTL elapses.
 const apiMessages = new Map();
+
+const API_MESSAGE_TTL_MIN_MS = 1000;
+const API_MESSAGE_TTL_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+
+function normalizeMessageTtl(rawTtl) {
+  if (rawTtl === undefined || rawTtl === null || rawTtl === "") {
+    return null;
+  }
+
+  const seconds = Number(rawTtl);
+
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return null;
+  }
+
+  const milliseconds = Math.round(seconds * 1000);
+
+  return Math.min(
+    Math.max(milliseconds, API_MESSAGE_TTL_MIN_MS),
+    API_MESSAGE_TTL_MAX_MS,
+  );
+}
+
+function purgeExpiredApiMessages(boardId) {
+  const messages = apiMessages.get(boardId);
+
+  if (!messages) return false;
+
+  const now = Date.now();
+  let changed = false;
+
+  for (const [messageId, message] of messages) {
+    if (message.expiresAt && message.expiresAt <= now) {
+      messages.delete(messageId);
+      changed = true;
+    }
+  }
+
+  return changed;
+}
 
 // ─────────────────────────────────────────────────────────────
 
@@ -194,6 +235,7 @@ function getApiMessages(boardId) {
 }
 
 function getApiMessageList(boardId) {
+  purgeExpiredApiMessages(boardId);
   return Array.from(getApiMessages(boardId).values());
 }
 
@@ -693,6 +735,23 @@ async function getWeatherData(point, requestedStationId) {
 
 setInterval(
   () => {
+    for (const [boardId, messages] of apiMessages) {
+      const changed = purgeExpiredApiMessages(boardId);
+
+      if (changed) {
+        const board = boards.get(boardId);
+
+        if (board?.boardWs && board.boardWs.readyState === 1) {
+          sendApiMessages(board, boardId);
+          board.lastActive = Date.now();
+        }
+      }
+
+      if (messages.size === 0) {
+        apiMessages.delete(boardId);
+      }
+    }
+
     const now = Date.now();
 
     for (const [id, b] of boards) {
@@ -867,14 +926,19 @@ app.get("/api/board/:boardId/messages", (req, res) => {
   });
 });
 
-// Add or replace a persistent automation message.
+// Add or replace an automation message.
 //
 // POST /api/board/ABC123/messages
 //
 // {
 //   "id": "garage",
-//   "text": "GARAGE DOOR OPEN"
+//   "text": "GARAGE DOOR OPEN",
+//   "ttl": 120
 // }
+//
+// ttl is optional and is specified in seconds. When present,
+// the message is removed automatically after that many seconds.
+// Re-posting the same id replaces the message and resets its TTL.
 app.post("/api/board/:boardId/messages", (req, res) => {
   if (!apiAuthorized(req)) {
     return res.status(401).json({
@@ -903,6 +967,20 @@ app.post("/api/board/:boardId/messages", (req, res) => {
       ? req.body.text.trim()
       : "";
 
+  const ttlMs = normalizeMessageTtl(req.body?.ttl);
+
+  if (
+    req.body?.ttl !== undefined &&
+    req.body?.ttl !== null &&
+    req.body?.ttl !== "" &&
+    ttlMs === null
+  ) {
+    return res.status(400).json({
+      ok: false,
+      error: "ttl must be a positive number of seconds",
+    });
+  }
+
   if (!id || !text) {
     return res.status(400).json({
       ok: false,
@@ -922,6 +1000,9 @@ app.post("/api/board/:boardId/messages", (req, res) => {
   messages.set(id, {
     id,
     text: text.slice(0, 1000),
+    ...(ttlMs !== null
+      ? { expiresAt: Date.now() + ttlMs }
+      : {}),
   });
 
   sendApiMessages(result.board, result.id);
