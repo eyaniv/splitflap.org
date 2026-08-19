@@ -5,7 +5,7 @@ set -euo pipefail
 # ADS-B.lol point query centered on the split-flap location.
 LATITUDE="43.7398976"
 LONGITUDE="-116.3878331"
-RADIUS_KM="7"
+RADIUS_KM="10"
 
 # Split-flap API settings. Override these with environment variables if desired.
 SPLITFLAP_API_BASE="${SPLITFLAP_API_BASE:-http://localhost:3000}"
@@ -40,7 +40,9 @@ fetch_flights() {
           .hex,
           ((.flight // "UNKNOWN") | gsub("^\\s+|\\s+$"; "")),
           (.t // "UNKNOWN"),
-          (.dst // 0)
+          (.dst // 0),
+          (.alt_geom // "UNKNOWN"),
+          (.gs  // "UNKNOWN")
         ]
       | @tsv
     '
@@ -51,10 +53,12 @@ send_flight() {
   local flight="$2"
   local type="$3"
   local distance="$4"
+  local altitude="$5"
+  local groundspeed="$6"
 
   # Keep the display compact. ADS-B distance is in nautical miles in the
   # API response, so label it as NM rather than implying statute miles.
-  local text=${flight}$'\n'"Type "${type}$'\n'${distance}" nm"
+  local text=$'\u2708\uFE0F'" "${flight}$'\n'"Type "${type}$'\n'${distance}" nm"$'\n'"ALT "${altitude}$'\n'"GRND SPD "${groundspeed}
 
   local payload
   payload=$(jq -n \
@@ -62,6 +66,8 @@ send_flight() {
     --arg text "$text" \
     --argjson ttl "$MESSAGE_TTL" \
     '{id: $id, text: $text, ttl: $ttl}')
+
+	# Debug: printf 'Board payload %s\n' "$payload" >&2
 
   curl "${curl_args[@]}" \
     --header "Content-Type: application/json" \
@@ -71,9 +77,9 @@ send_flight() {
 
 while true; do
   if flights=$(fetch_flights); then
-    while IFS=$'\t' read -r hex flight type distance; do
+    while IFS=$'\t' read -r hex flight type distance altitude groundspeed; do
       [[ -n "$hex" ]] || continue
-      send_flight "$hex" "$flight" "$type" "$distance" || \
+    	send_flight "$hex" "$flight" "$type" "$distance" "$altitude" "$groundspeed" || \
         printf 'Unable to send flight %s to split-flap API\n' "$flight" >&2
     done <<< "$flights"
   else
