@@ -1057,9 +1057,9 @@
             <div class="field">
               <div class="field-row">
                 <span class="field-label">Rows</span
-                ><span class="field-val" id="val-rows">5</span>
+                ><span class="field-val" id="val-rows">6</span>
               </div>
-              <input type="range" id="input-rows" min="1" max="10" value="5" />
+              <input type="range" id="input-rows" min="1" max="10" value="6" />
             </div>
             <div class="field">
               <div class="field-row">
@@ -1617,7 +1617,7 @@
         soundVolume: 0.8,
         soundRate: 1.5,
         cols: 22,
-        rows: 5,
+        rows: 6,
         scale: 0.22,
         gridGap: 11,
         fontFamily: "'Roboto Mono', monospace",
@@ -1717,7 +1717,7 @@
         messages.forEach((msg, i) => {
           const card = document.createElement("div");
           card.className = "msg-card";
-          card.innerHTML = `<div class="msg-card-head"><span class="msg-card-num">MSG ${i + 1}</span>${messages.length > 1 ? `<div class="msg-card-del" onclick="deleteMessage(${i})">✕</div>` : ""}</div><textarea rows="5" data-msg-idx="${i}" oninput="onMsgEdit(${i},this.value)" onfocus="activeMsgCard=${i};updateMiniBoard()">${escapeHtml(msg)}</textarea>`;
+          card.innerHTML = `<div class="msg-card-head"><span class="msg-card-num">MSG ${i + 1}</span>${messages.length > 1 ? `<div class="msg-card-del" onclick="deleteMessage(${i})">✕</div>` : ""}</div><textarea rows="6" data-msg-idx="${i}" oninput="onMsgEdit(${i},this.value)" onfocus="activeMsgCard=${i};updateMiniBoard()">${escapeHtml(msg)}</textarea>`;
           c.appendChild(card);
         });
         updateMiniBoard();
