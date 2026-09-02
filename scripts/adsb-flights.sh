@@ -55,11 +55,12 @@ send_flight() {
   local distance="$4"
   local altitude="$5"
   local groundspeed="$6"
+  local owner="$7"
 
   # Keep the display compact. ADS-B distance is in nautical miles in the
   # API response, so label it as NM rather than implying statute miles.
-  local text=$'\u2708\uFE0F'" "${flight}$'\n'${type}$'\n'${distance}" nm"$'\n'"ALT "${altitude}$'\n'"GRND SPD "${groundspeed}
-
+  local text=$'\u2708\uFE0F'" "${flight}$'\n'${type}$'\n'${distance}" nm"$'\n'"ALT "${altitude}$'\n'"GRND SPD "${groundspeed}$'\n'"${owner}"
+  
   local payload
   payload=$(jq -n \
     --arg id "adsb-${hex}" \
@@ -93,10 +94,7 @@ aircraft_lookup() {
 	
 	# Convert search term to uppercase
 	SEARCH_CODE=$(echo "$1" | tr '[:lower:]' '[:upper:]')
-	
-	#echo "Searching for code: $SEARCH_CODE..."
-	#echo "-----------------------------------"
-	
+
 	# Parse the CSV file (Format: "Name","IATA","ICAO")
 	# Matches the search code in either the IATA (field 2) or ICAO (field 3)
 	awk -v code="$SEARCH_CODE" -F',' '
@@ -117,17 +115,48 @@ aircraft_lookup() {
 	' "$DATA_FILE"
 }
 
+aircraft_lookup_online() {	
+	# Check for user input
+	if [ -z "$1" ]; then
+		echo "Usage: $0 <adsb-hex-code>"
+		echo "Example: $0 a8af9d"
+		exit 1
+	fi
+	
+	# Convert search term to uppercase
+	FLIGHT_CODE=$(echo "$1" | tr '[:lower:]' '[:upper:]')
+		
+	curl_args=(
+	  --silent
+	  --max-time 15
+	)
+	
+	FLIGHT_ROUTE_URL="https://api.adsbdb.com/v0/aircraft/{$1}"
+
+	  curl "${curl_args[@]}" "$FLIGHT_ROUTE_URL" |
+		jq -r '
+		  try .response.aircraft.manufacturer catch "",
+		  try .response.aircraft.registered_owner catch ""
+		'
+}
+
 while true; do
   if flights=$(fetch_flights); then
     while IFS=$'\t' read -r hex flight type distance altitude groundspeed; do
       [[ -n "$hex" ]] || continue
       typetext=$(aircraft_lookup "$type")
 
+	  #echo "looking up $flight"
+	  # No IFS manipulation required
+	  mapfile -t route < <(aircraft_lookup_online "$hex")
+	  manufacturer="${route[0]:-}"
+	  owner="${route[1]:-}"
+      
       if [ -z "$typetext" ]; then
-	    typetext="$type"
+	    typetext="$manufacturer"
       fi
 
-   	  send_flight "$hex" "$flight" "$typetext" "$distance" "$altitude" "$groundspeed" || \
+   	  send_flight "$hex" "$flight" "$typetext" "$distance" "$altitude" "$groundspeed" "$owner" || \
       printf 'Unable to send flight %s to split-flap API\n' "$flight" >&2
     done <<< "$flights"
   else
