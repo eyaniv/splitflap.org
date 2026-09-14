@@ -21,27 +21,13 @@ const boards = new Map();
 // ─────────────────────────────────────────────────────────────
 // Home automation API
 // ─────────────────────────────────────────────────────────────
-
-// Set this environment variable to protect the REST API:
-//
-//   export SPLITFLAP_API_SECRET="your-secret"
-//
-// If no secret is configured, the API is accessible without
-// authentication. This preserves the original local-only behavior.
 const API_SECRET = process.env.SPLITFLAP_API_SECRET || "";
 
-// Map of:
-//   boardId -> Map(messageId -> { id, text, priority, expiresAt })
-//
-// Each board therefore has its own independent set of
-// home-automation messages. Messages with expiresAt are
-// automatically removed when their TTL elapses.
+// Map of boardId -> Map(messageId -> { id, text, priority, expiresAt })
 const apiMessages = new Map();
 const API_MESSAGE_TTL_MIN_MS = 1000;
 const API_MESSAGE_TTL_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 const MESSAGE_PRIORITY_WEIGHTS = { immediate: 0, high: 4, normal: 2, low: 1 };
-const IMMEDIATE_MESSAGE_HOLD_MS = 12 * 1000;
-const immediateMessageTimers = new Map();
 
 function normalizeMessageTtl(rawTtl) {
   if (rawTtl === undefined || rawTtl === null || rawTtl === "") return null;
@@ -54,27 +40,6 @@ function normalizeMessagePriority(rawPriority) {
   const priority = rawPriority.toLowerCase().trim();
   return Object.prototype.hasOwnProperty.call(MESSAGE_PRIORITY_WEIGHTS, priority) ? priority : "normal";
 }
-function clearImmediateMessageTimer(boardId, messageId) {
-  const key = `${boardId}:${messageId}`;
-  const timer = immediateMessageTimers.get(key);
-  if (timer) { clearTimeout(timer); immediateMessageTimers.delete(key); }
-}
-function scheduleImmediateMessageDemotion(board, boardId, messageId) {
-  clearImmediateMessageTimer(boardId, messageId);
-  const key = `${boardId}:${messageId}`;
-  const timer = setTimeout(() => {
-    immediateMessageTimers.delete(key);
-    const message = apiMessages.get(boardId)?.get(messageId);
-    if (!message || message.priority !== "immediate") return;
-    message.priority = "high";
-    if (board?.boardWs && board.boardWs.readyState === 1) {
-      sendApiMessages(board, boardId);
-      safeSend(board.boardWs, { type: "play_sequence" });
-      board.lastActive = Date.now();
-    }
-  }, IMMEDIATE_MESSAGE_HOLD_MS);
-  immediateMessageTimers.set(key, timer);
-}
 function purgeExpiredApiMessages(boardId) {
   const messages = apiMessages.get(boardId);
   if (!messages) return false;
@@ -82,7 +47,6 @@ function purgeExpiredApiMessages(boardId) {
   let changed = false;
   for (const [messageId, message] of messages) {
     if (message.expiresAt && message.expiresAt <= now) {
-      clearImmediateMessageTimer(boardId, messageId);
       messages.delete(messageId);
       changed = true;
     }
@@ -144,27 +108,22 @@ function apiMessageText(boardId) {
   const messages = getApiMessageList(boardId).filter((message) => (MESSAGE_PRIORITY_WEIGHTS[message.priority] ?? MESSAGE_PRIORITY_WEIGHTS.normal) > 0);
   if (!messages.length) return "";
 
-  // Smooth weighted round-robin. Unlike simple repetition, this distributes
-  // higher-priority messages through the rotation instead of grouping copies.
+  // Interleaved weighted rotation. For one high, one normal, and one low
+  // message (weights 4/2/1), this produces H -> N -> H -> L -> H -> N -> H
+  // rather than displaying the four high slots consecutively.
   const totalWeight = messages.reduce((sum, message) => sum + (MESSAGE_PRIORITY_WEIGHTS[message.priority] ?? MESSAGE_PRIORITY_WEIGHTS.normal), 0);
-  const currentWeights = messages.map(() => 0);
-  const expanded = [];
+  const scheduled = [];
+  let order = 0;
 
-  for (let slot = 0; slot < totalWeight; slot++) {
-    let selected = -1;
-    let selectedWeight = -Infinity;
-    for (let i = 0; i < messages.length; i++) {
-      currentWeights[i] += MESSAGE_PRIORITY_WEIGHTS[messages[i].priority] ?? MESSAGE_PRIORITY_WEIGHTS.normal;
-      if (currentWeights[i] > selectedWeight) {
-        selected = i;
-        selectedWeight = currentWeights[i];
-      }
+  for (const message of messages) {
+    const weight = MESSAGE_PRIORITY_WEIGHTS[message.priority] ?? MESSAGE_PRIORITY_WEIGHTS.normal;
+    for (let i = 0; i < weight; i++) {
+      scheduled.push({ text: message.text, position: ((i + 0.5) * totalWeight) / weight, order: order++ });
     }
-    currentWeights[selected] -= totalWeight;
-    expanded.push(messages[selected].text);
   }
 
-  return expanded.join("\n---\n");
+  scheduled.sort((a, b) => a.position - b.position || a.order - b.order);
+  return scheduled.map((item) => item.text).join("\n---\n");
 }
 function combineMessages(baseMessages, boardId) {
   const base = typeof baseMessages === "string" ? baseMessages.trim() : "";
@@ -192,21 +151,6 @@ function moveApiMessages(oldBoardId, newBoardId) {
   if (!oldBoardId || !newBoardId || oldBoardId === newBoardId) return;
   const messages = apiMessages.get(oldBoardId);
   if (messages) { apiMessages.delete(oldBoardId); apiMessages.set(newBoardId, messages); }
-  for (const [key, timer] of immediateMessageTimers) {
-    if (!key.startsWith(`${oldBoardId}:`)) continue;
-    clearTimeout(timer); immediateMessageTimers.delete(key);
-    const messageId = key.slice(oldBoardId.length + 1);
-    const newKey = `${newBoardId}:${messageId}`;
-    const newTimer = setTimeout(() => {
-      immediateMessageTimers.delete(newKey);
-      const message = apiMessages.get(newBoardId)?.get(messageId);
-      if (!message || message.priority !== "immediate") return;
-      message.priority = "high";
-      const board = boards.get(newBoardId);
-      if (board?.boardWs && board.boardWs.readyState === 1) { sendApiMessages(board, newBoardId); safeSend(board.boardWs, { type: "play_sequence" }); board.lastActive = Date.now(); }
-    }, IMMEDIATE_MESSAGE_HOLD_MS);
-    immediateMessageTimers.set(newKey, newTimer);
-  }
 }
 
 async function fetchWeatherGovJson(url) {
@@ -332,20 +276,11 @@ app.get("/api/board/:boardId/messages", (req, res) => {
 
 // Add or replace an automation message.
 //
-// {
-//   "id": "garage",
-//   "text": "GARAGE DOOR OPEN",
-//   "ttl": 120,
-//   "priority": "high"
-// }
+// { "id": "garage", "text": "GARAGE DOOR OPEN", "ttl": 120, "priority": "high" }
 //
-// ttl is optional and is specified in seconds. When present,
-// the message is removed automatically after that many seconds.
+// ttl is optional and is specified in seconds. When present, the message is removed automatically.
 // Re-posting the same id replaces the message and resets its TTL.
-//
-// priority is optional: immediate, high, normal, or low.
-// Existing clients that omit priority continue to use normal.
-// ttl is optional and is specified in seconds.
+// priority is optional: immediate, high, normal, or low. Existing clients that omit priority use normal.
 app.post("/api/board/:boardId/messages", (req, res) => {
   if (!apiAuthorized(req)) return res.status(401).json({ ok: false, error: "Unauthorized" });
   const result = getApiBoard(req.params.boardId);
@@ -358,16 +293,14 @@ app.post("/api/board/:boardId/messages", (req, res) => {
   if (!id || !text) return res.status(400).json({ ok: false, error: "id and text are required" });
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return res.status(400).json({ ok: false, error: "Invalid message id" });
   const messages = getApiMessages(result.id);
-  clearImmediateMessageTimer(result.id, id);
   messages.set(id, { id, text: text.slice(0, 1000), priority, ...(ttlMs !== null ? { expiresAt: Date.now() + ttlMs } : {}) });
   result.board.lastActive = Date.now();
 
   if (priority === "immediate") {
-    // Immediate messages intentionally bypass the normal sequence. The board
-    // receives the flip directly and the message remains visible for 12 sec.
-    // It is then demoted to high and normal weighted rotation resumes.
+    // Immediate is an action, not a rotation weight. Flip it now and let the
+    // board's existing rotation timer replace it naturally. No reset, blank,
+    // hold, demotion timer, or play_sequence restart.
     safeSend(result.board.boardWs, { type: "flip_message", text: text.slice(0, 1000) });
-    scheduleImmediateMessageDemotion(result.board, result.id, id);
   } else {
     sendApiMessages(result.board, result.id);
   }
@@ -382,7 +315,7 @@ app.delete("/api/board/:boardId/messages/:messageId", (req, res) => {
   if (!boards.has(boardId)) return res.status(404).json({ ok: false, error: "Board not found", boardId });
   const messages = getApiMessages(boardId), messageId = req.params.messageId;
   if (!messages.has(messageId)) return res.status(404).json({ ok: false, error: "Message not found", boardId, messageId });
-  clearImmediateMessageTimer(boardId, messageId); messages.delete(messageId);
+  messages.delete(messageId);
   const board = boards.get(boardId);
   if (board?.boardWs && board.boardWs.readyState === 1) { sendApiMessages(board, boardId); board.lastActive = Date.now(); }
   res.json({ ok: true, boardId, messages: getApiMessageList(boardId) });
