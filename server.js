@@ -17,7 +17,25 @@ app.use("/api/", rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders
 app.use(express.static(path.join(__dirname, "public")));
 
 const boards = new Map();
+
+// ─────────────────────────────────────────────────────────────
+// Home automation API
+// ─────────────────────────────────────────────────────────────
+
+// Set this environment variable to protect the REST API:
+//
+//   export SPLITFLAP_API_SECRET="your-secret"
+//
+// If no secret is configured, the API is accessible without
+// authentication. This preserves the original local-only behavior.
 const API_SECRET = process.env.SPLITFLAP_API_SECRET || "";
+
+// Map of:
+//   boardId -> Map(messageId -> { id, text, priority, expiresAt })
+//
+// Each board therefore has its own independent set of
+// home-automation messages. Messages with expiresAt are
+// automatically removed when their TTL elapses.
 const apiMessages = new Map();
 const API_MESSAGE_TTL_MIN_MS = 1000;
 const API_MESSAGE_TTL_MAX_MS = 7 * 24 * 60 * 60 * 1000;
@@ -312,6 +330,22 @@ app.get("/api/board/:boardId/messages", (req, res) => {
   res.json({ ok: true, boardId: id, messages: getApiMessageList(id) });
 });
 
+// Add or replace an automation message.
+//
+// {
+//   "id": "garage",
+//   "text": "GARAGE DOOR OPEN",
+//   "ttl": 120,
+//   "priority": "high"
+// }
+//
+// ttl is optional and is specified in seconds. When present,
+// the message is removed automatically after that many seconds.
+// Re-posting the same id replaces the message and resets its TTL.
+//
+// priority is optional: immediate, high, normal, or low.
+// Existing clients that omit priority continue to use normal.
+// ttl is optional and is specified in seconds.
 app.post("/api/board/:boardId/messages", (req, res) => {
   if (!apiAuthorized(req)) return res.status(401).json({ ok: false, error: "Unauthorized" });
   const result = getApiBoard(req.params.boardId);
