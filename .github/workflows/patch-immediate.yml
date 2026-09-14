@@ -1,0 +1,40 @@
+name: Patch immediate message priority
+
+on:
+  push:
+    branches: [feature/message-priorities]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, 'Fix immediate messages to persist as high priority') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch server.js
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('server.js')
+          s = p.read_text()
+          old = '''  const priority = normalizeMessagePriority(req.body?.priority);\n  if (req.body?.ttl !== undefined'''
+          new = '''  const priority = normalizeMessagePriority(req.body?.priority);\n  const storedPriority = priority === "immediate" ? "high" : priority;\n  if (req.body?.ttl !== undefined'''
+          if old not in s:
+              raise SystemExit('priority declaration not found')
+          s = s.replace(old, new, 1)
+          old = 'messages.set(id, { id, text: text.slice(0, 1000), priority, ...(ttlMs !== null ? { expiresAt: Date.now() + ttlMs } : {}) });'
+          new = 'messages.set(id, { id, text: text.slice(0, 1000), priority: storedPriority, ...(ttlMs !== null ? { expiresAt: Date.now() + ttlMs } : {}) });'
+          if old not in s:
+              raise SystemExit('message storage line not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server.js
+          git commit -m "Fix immediate messages to persist as high priority"
+          git push
