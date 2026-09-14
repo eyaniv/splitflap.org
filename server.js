@@ -289,11 +289,12 @@ app.post("/api/board/:boardId/messages", (req, res) => {
   const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
   const ttlMs = normalizeMessageTtl(req.body?.ttl);
   const priority = normalizeMessagePriority(req.body?.priority);
+  const storedPriority = priority === "immediate" ? "high" : priority;
   if (req.body?.ttl !== undefined && req.body?.ttl !== null && req.body?.ttl !== "" && ttlMs === null) return res.status(400).json({ ok: false, error: "ttl must be a positive number of seconds" });
   if (!id || !text) return res.status(400).json({ ok: false, error: "id and text are required" });
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return res.status(400).json({ ok: false, error: "Invalid message id" });
   const messages = getApiMessages(result.id);
-  messages.set(id, { id, text: text.slice(0, 1000), priority, ...(ttlMs !== null ? { expiresAt: Date.now() + ttlMs } : {}) });
+  messages.set(id, { id, text: text.slice(0, 1000), priority: storedPriority, ...(ttlMs !== null ? { expiresAt: Date.now() + ttlMs } : {}) });
   result.board.lastActive = Date.now();
 
   if (priority === "immediate") {
