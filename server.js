@@ -32,24 +32,25 @@ const boards = new Map();
 // Home automation API
 // ─────────────────────────────────────────────────────────────
 
-// Set this environment variable to protect the REST API:
-//
-//   export SPLITFLAP_API_SECRET="your-secret"
-//
-// If no secret is configured, the API is accessible without
-// authentication. This preserves the original local-only behavior.
 const API_SECRET = process.env.SPLITFLAP_API_SECRET || "";
 
 // Map of:
-//   boardId -> Map(messageId -> { id, text, expiresAt })
-//
-// Each board therefore has its own independent set of
-// home-automation messages. Messages with expiresAt are
-// automatically removed when their TTL elapses.
+//   boardId -> Map(messageId -> { id, text, priority, expiresAt })
 const apiMessages = new Map();
 
 const API_MESSAGE_TTL_MIN_MS = 1000;
 const API_MESSAGE_TTL_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+
+const MESSAGE_PRIORITY_WEIGHTS = {
+  immediate: 0,
+  high: 4,
+  normal: 2,
+  low: 1,
+};
+
+const IMMEDIATE_MESSAGE_HOLD_MS = 12 * 1000;
+const IMMEDIATE_MESSAGE_BLANK_MS = 1000;
+const immediateMessageTimers = new Map();
 
 function normalizeMessageTtl(rawTtl) {
   if (rawTtl === undefined || rawTtl === null || rawTtl === "") {
@@ -70,6 +71,58 @@ function normalizeMessageTtl(rawTtl) {
   );
 }
 
+function normalizeMessagePriority(rawPriority) {
+  if (typeof rawPriority !== "string") return "normal";
+
+  const priority = rawPriority.toLowerCase().trim();
+
+  return Object.prototype.hasOwnProperty.call(
+    MESSAGE_PRIORITY_WEIGHTS,
+    priority,
+  )
+    ? priority
+    : "normal";
+}
+
+function clearImmediateMessageTimer(boardId, messageId) {
+  const key = `${boardId}:${messageId}`;
+  const timer = immediateMessageTimers.get(key);
+
+  if (timer) {
+    clearTimeout(timer);
+    immediateMessageTimers.delete(key);
+  }
+}
+
+function scheduleImmediateMessageDemotion(board, boardId, messageId) {
+  clearImmediateMessageTimer(boardId, messageId);
+
+  const key = `${boardId}:${messageId}`;
+
+  const timer = setTimeout(() => {
+    immediateMessageTimers.delete(key);
+
+    const messages = apiMessages.get(boardId);
+    const message = messages?.get(messageId);
+
+    if (!message || message.priority !== "immediate") {
+      return;
+    }
+
+    message.priority = "high";
+
+    if (board?.boardWs && board.boardWs.readyState === 1) {
+      sendApiMessages(board, boardId);
+      safeSend(board.boardWs, {
+        type: "play_sequence",
+      });
+      board.lastActive = Date.now();
+    }
+  }, IMMEDIATE_MESSAGE_HOLD_MS);
+
+  immediateMessageTimers.set(key, timer);
+}
+
 function purgeExpiredApiMessages(boardId) {
   const messages = apiMessages.get(boardId);
 
@@ -80,6 +133,7 @@ function purgeExpiredApiMessages(boardId) {
 
   for (const [messageId, message] of messages) {
     if (message.expiresAt && message.expiresAt <= now) {
+      clearImmediateMessageTimer(boardId, messageId);
       messages.delete(messageId);
       changed = true;
     }
@@ -220,7 +274,6 @@ function normalizeBoardId(rawBoardId) {
 }
 
 function apiAuthorized(req) {
-  // If no API secret is configured, allow requests.
   if (!API_SECRET) return true;
 
   return req.get("X-API-Secret") === API_SECRET;
@@ -240,9 +293,20 @@ function getApiMessageList(boardId) {
 }
 
 function apiMessageText(boardId) {
-  return getApiMessageList(boardId)
-    .map((message) => message.text)
-    .join("\n---\n");
+  const messages = getApiMessageList(boardId);
+  const expanded = [];
+
+  for (const message of messages) {
+    const weight =
+      MESSAGE_PRIORITY_WEIGHTS[message.priority] ??
+      MESSAGE_PRIORITY_WEIGHTS.normal;
+
+    for (let i = 0; i < weight; i++) {
+      expanded.push(message.text);
+    }
+  }
+
+  return expanded.join("\n---\n");
 }
 
 function combineMessages(baseMessages, boardId) {
@@ -331,6 +395,36 @@ function moveApiMessages(oldBoardId, newBoardId) {
   if (messages) {
     apiMessages.delete(oldBoardId);
     apiMessages.set(newBoardId, messages);
+  }
+
+  for (const [key, timer] of immediateMessageTimers) {
+    if (!key.startsWith(`${oldBoardId}:`)) continue;
+
+    clearTimeout(timer);
+    immediateMessageTimers.delete(key);
+
+    const messageId = key.slice(oldBoardId.length + 1);
+    const newKey = `${newBoardId}:${messageId}`;
+
+    const remaining = IMMEDIATE_MESSAGE_HOLD_MS;
+    const newTimer = setTimeout(() => {
+      immediateMessageTimers.delete(newKey);
+      const movedMessages = apiMessages.get(newBoardId);
+      const message = movedMessages?.get(messageId);
+
+      if (!message || message.priority !== "immediate") return;
+
+      message.priority = "high";
+      const board = boards.get(newBoardId);
+
+      if (board?.boardWs && board.boardWs.readyState === 1) {
+        sendApiMessages(board, newBoardId);
+        safeSend(board.boardWs, { type: "play_sequence" });
+        board.lastActive = Date.now();
+      }
+    }, remaining);
+
+    immediateMessageTimers.set(newKey, newTimer);
   }
 }
 
@@ -560,7 +654,6 @@ async function getWeatherPointData(weatherPoint) {
   const stationsResponse =
     await fetchWeatherGovJson(stationsUrl);
 
-  // get the first 5 stations with valid IDs
   const observationStations = (stationsResponse?.features || [])
     .map((feature) => ({
       id: normalizeWeatherStation(
@@ -692,7 +785,6 @@ async function getWeatherData(point, requestedStationId) {
 
   const data = {
     fetchedAt: new Date().toISOString(),
-
     location: {
       latitude,
       longitude,
@@ -700,24 +792,18 @@ async function getWeatherData(point, requestedStationId) {
       gridX: pointData.gridX,
       gridY: pointData.gridY,
     },
-
     observationStations: pointData.observationStations,
-
     weatherStation: selectedStation?.id || "",
-
     updatedAt:
       forecast?.properties?.updateTime ||
       forecast?.properties?.generatedAt ||
       null,
-
     alerts,
-
     current: selectedStation
       ? await getCurrentWeather(selectedStation).catch(
           () => null,
         )
       : null,
-
     periods,
   };
 
@@ -765,9 +851,6 @@ setInterval(
         } catch (_) {}
 
         boards.delete(id);
-
-        // The board is gone, so its API message state is no longer
-        // useful either.
         apiMessages.delete(id);
       }
     }
@@ -804,15 +887,8 @@ app.get("/api/health", (_, res) => {
 // Home automation REST API
 // ─────────────────────────────────────────────────────────────
 
-// Immediate message.
-//
-// Does NOT change the message rotation.
-//
-// POST /api/board/ABC123/message
-//
-// {
-//   "text": "DINNER IS READY"
-// }
+// One-shot immediate message.
+// Does NOT change the persistent message rotation.
 app.post("/api/board/:boardId/message", (req, res) => {
   if (!apiAuthorized(req)) {
     return res.status(401).json({
@@ -858,9 +934,6 @@ app.post("/api/board/:boardId/message", (req, res) => {
 });
 
 // Start Message rotation
-//
-// GET /api/board/ABC123/play
-//
 app.get("/api/board/:boardId/play", (req, res) => {
   if (!apiAuthorized(req)) {
     return res.status(401).json({
@@ -891,9 +964,6 @@ app.get("/api/board/:boardId/play", (req, res) => {
   });
 });
 
-// Get runtime API-managed messages for a board.
-//
-// GET /api/board/ABC123/messages
 app.get("/api/board/:boardId/messages", (req, res) => {
   if (!apiAuthorized(req)) {
     return res.status(401).json({
@@ -928,17 +998,16 @@ app.get("/api/board/:boardId/messages", (req, res) => {
 
 // Add or replace an automation message.
 //
-// POST /api/board/ABC123/messages
-//
 // {
 //   "id": "garage",
 //   "text": "GARAGE DOOR OPEN",
-//   "ttl": 120
+//   "ttl": 120,
+//   "priority": "high"
 // }
 //
-// ttl is optional and is specified in seconds. When present,
-// the message is removed automatically after that many seconds.
-// Re-posting the same id replaces the message and resets its TTL.
+// priority is optional: immediate, high, normal, or low.
+// Existing clients that omit priority continue to use normal.
+// ttl is optional and is specified in seconds.
 app.post("/api/board/:boardId/messages", (req, res) => {
   if (!apiAuthorized(req)) {
     return res.status(401).json({
@@ -968,6 +1037,7 @@ app.post("/api/board/:boardId/messages", (req, res) => {
       : "";
 
   const ttlMs = normalizeMessageTtl(req.body?.ttl);
+  const priority = normalizeMessagePriority(req.body?.priority);
 
   if (
     req.body?.ttl !== undefined &&
@@ -997,17 +1067,52 @@ app.post("/api/board/:boardId/messages", (req, res) => {
 
   const messages = getApiMessages(result.id);
 
+  // A repost replaces any previous immediate lifecycle for this id.
+  clearImmediateMessageTimer(result.id, id);
+
   messages.set(id, {
     id,
     text: text.slice(0, 1000),
+    priority,
     ...(ttlMs !== null
       ? { expiresAt: Date.now() + ttlMs }
       : {}),
   });
 
-  sendApiMessages(result.board, result.id);
-
   result.board.lastActive = Date.now();
+
+  if (priority === "immediate") {
+    // Remove the current message from the board, let the blanking
+    // animation finish, then show the immediate message.
+    safeSend(result.board.boardWs, {
+      type: "reset_board",
+    });
+
+    setTimeout(() => {
+      const current = messages.get(id);
+
+      if (!current || current.priority !== "immediate") return;
+      if (
+        !result.board.boardWs ||
+        result.board.boardWs.readyState !== 1
+      ) {
+        return;
+      }
+
+      safeSend(result.board.boardWs, {
+        type: "flip_message",
+        text: current.text,
+      });
+
+      scheduleImmediateMessageDemotion(
+        result.board,
+        result.id,
+        id,
+      );
+    }, IMMEDIATE_MESSAGE_BLANK_MS);
+  } else {
+    sendApiMessages(result.board, result.id);
+  }
 
   res.json({
     ok: true,
@@ -1016,9 +1121,6 @@ app.post("/api/board/:boardId/messages", (req, res) => {
   });
 });
 
-// Remove a runtime automation message.
-//
-// DELETE /api/board/ABC123/messages/garage
 app.delete(
   "/api/board/:boardId/messages/:messageId",
   (req, res) => {
@@ -1058,6 +1160,7 @@ app.delete(
       });
     }
 
+    clearImmediateMessageTimer(boardId, messageId);
     messages.delete(messageId);
 
     const board = boards.get(boardId);
@@ -1078,9 +1181,6 @@ app.delete(
   },
 );
 
-// Immediately advance to the next message.
-//
-// POST /api/board/ABC123/next
 app.post("/api/board/:boardId/next", (req, res) => {
   if (!apiAuthorized(req)) {
     return res.status(401).json({
@@ -1180,7 +1280,6 @@ app.get("/api/weather/point", async (req, res) => {
 
     res.json({
       ok: true,
-
       location: {
         latitude: pointData.latitude,
         longitude: pointData.longitude,
@@ -1188,7 +1287,6 @@ app.get("/api/weather/point", async (req, res) => {
         gridX: pointData.gridX,
         gridY: pointData.gridY,
       },
-
       observationStations:
         pointData.observationStations,
     });
@@ -1272,8 +1370,6 @@ wss.on("connection", (ws) => {
         type: "board_disconnected",
       });
 
-      // Primary board remains registered even while its display
-      // WebSocket is temporarily disconnected.
       if (b.primary) {
         b.lastActive = Date.now();
         savePrimaryState(b);
@@ -1288,7 +1384,6 @@ wss.on("connection", (ws) => {
       });
     }
 
-    // Clear pending if the pending companion disconnected
     if (b.pendingWs === ws) {
       b.pendingWs = null;
     }
@@ -1307,8 +1402,6 @@ function safeSend(ws, obj) {
 
 function handleMsg(ws, msg) {
   switch (msg.type) {
-    // ── Board registers ──
-
     case "register_board": {
       const boardId = genBoardId();
       const isPrimary = boardId === FIRST_BOARD_ID;
@@ -1325,18 +1418,11 @@ function handleMsg(ws, msg) {
         secret,
         settings: persisted?.settings || null,
         messages: null,
-
-        // The companion's messages are kept separately so API
-        // messages can be added without destroying them.
         baseMessages: persisted?.baseMessages || "",
-
         mode: persisted?.mode || "messages",
-
         weatherPoint: persisted?.weatherPoint || DEFAULT_WEATHER_POINT,
         weatherStation: persisted?.weatherStation || "",
-
         locked: false,
-
         createdAt: Date.now(),
         lastActive: Date.now(),
       });
@@ -1357,11 +1443,8 @@ function handleMsg(ws, msg) {
       });
 
       console.log(`Board created: ${boardId}`);
-
       break;
     }
-
-    // ── Companion requests pairing ──
 
     case "pair": {
       const id =
@@ -1381,35 +1464,22 @@ function handleMsg(ws, msg) {
           : "";
 
       if (id.length !== 6) {
-        safeSend(ws, {
-          type: "error",
-          message: "Invalid code",
-        });
-
+        safeSend(ws, { type: "error", message: "Invalid code" });
         return;
       }
 
       const b = boards.get(id);
 
       if (!b) {
-        safeSend(ws, {
-          type: "error",
-          message: "Board not found",
-        });
-
+        safeSend(ws, { type: "error", message: "Board not found" });
         return;
       }
 
       if (!b.boardWs || b.boardWs.readyState !== 1) {
-        safeSend(ws, {
-          type: "error",
-          message: "Board is offline",
-        });
-
+        safeSend(ws, { type: "error", message: "Board is offline" });
         return;
       }
 
-      // If board is locked (already has a companion), reject
       if (
         b.locked &&
         b.companionWs &&
@@ -1417,29 +1487,20 @@ function handleMsg(ws, msg) {
       ) {
         safeSend(ws, {
           type: "error",
-          message:
-            "Board is locked. Disconnect current companion first.",
+          message: "Board is locked. Disconnect current companion first.",
         });
-
         return;
       }
 
-      // Check if secret matches (QR code path) → auto-approve
-      if (
-        secret.length === 32 &&
-        secret === b.secret
-      ) {
+      if (secret.length === 32 && secret === b.secret) {
         completePairing(b, ws, id);
         return;
       }
 
-      // Manual code path → require board-side approval
-
       if (b.pendingWs) {
         safeSend(b.pendingWs, {
           type: "error",
-          message:
-            "Another device is waiting for approval",
+          message: "Another device is waiting for approval",
         });
       }
 
@@ -1448,91 +1509,48 @@ function handleMsg(ws, msg) {
 
       safeSend(ws, {
         type: "waiting_approval",
-        message:
-          "Waiting for TV to approve...",
+        message: "Waiting for TV to approve...",
       });
 
-      safeSend(b.boardWs, {
-        type: "pair_request",
-      });
-
+      safeSend(b.boardWs, { type: "pair_request" });
       console.log(`Pair request pending: ${id}`);
-
       break;
     }
-
-    // ── Board approves pending companion ──
 
     case "approve_pair": {
-      if (
-        ws.role !== "board" ||
-        !ws.boardId
-      ) {
-        return;
-      }
+      if (ws.role !== "board" || !ws.boardId) return;
 
       const b = boards.get(ws.boardId);
 
-      if (!b || !b.pendingWs) {
-        return;
-      }
+      if (!b || !b.pendingWs) return;
 
-      completePairing(
-        b,
-        b.pendingWs,
-        ws.boardId,
-      );
-
+      completePairing(b, b.pendingWs, ws.boardId);
       b.pendingWs = null;
-
       break;
     }
 
-    // ── Board rejects pending companion ──
-
     case "reject_pair": {
-      if (
-        ws.role !== "board" ||
-        !ws.boardId
-      ) {
-        return;
-      }
+      if (ws.role !== "board" || !ws.boardId) return;
 
       const b = boards.get(ws.boardId);
 
-      if (!b || !b.pendingWs) {
-        return;
-      }
+      if (!b || !b.pendingWs) return;
 
       safeSend(b.pendingWs, {
         type: "error",
-        message:
-          "Connection rejected by TV",
+        message: "Connection rejected by TV",
       });
 
       b.pendingWs.boardId = null;
       b.pendingWs = null;
 
-      safeSend(ws, {
-        type: "pair_rejected",
-      });
-
-      console.log(
-        `Pair rejected: ${ws.boardId}`,
-      );
-
+      safeSend(ws, { type: "pair_rejected" });
+      console.log(`Pair rejected: ${ws.boardId}`);
       break;
     }
 
-    // ── Companion disconnects cleanly ──
-
     case "companion_disconnect": {
-      if (
-        ws.role !== "companion" ||
-        !ws.boardId
-      ) {
-        return;
-      }
+      if (ws.role !== "companion" || !ws.boardId) return;
 
       const oldBoardId = ws.boardId;
       const b = boards.get(oldBoardId);
@@ -1553,23 +1571,16 @@ function handleMsg(ws, msg) {
 
         ws.boardId = null;
         ws.role = null;
-
-        safeSend(ws, {
-          type: "disconnected",
-        });
-
+        safeSend(ws, { type: "disconnected" });
         savePrimaryState(b);
         break;
       }
 
-      // Generate new code+secret for next pairing
       boards.delete(oldBoardId);
 
       const newId = genBoardId();
       const newSecret = genSecret();
 
-      // Keep API messages associated with the physical
-      // board even though the pairing ID changes.
       moveApiMessages(oldBoardId, newId);
 
       b.boardId = newId;
@@ -1589,31 +1600,19 @@ function handleMsg(ws, msg) {
       }
 
       safeSend(b.boardWs, {
-        type:
-          "companion_disconnected_new_code",
+        type: "companion_disconnected_new_code",
         boardId: newId,
         secret: newSecret,
       });
 
       ws.boardId = null;
       ws.role = null;
-
-      safeSend(ws, {
-        type: "disconnected",
-      });
-
+      safeSend(ws, { type: "disconnected" });
       break;
     }
 
-    // ── Board kicks companion ──
-
     case "kick_companion": {
-      if (
-        ws.role !== "board" ||
-        !ws.boardId
-      ) {
-        return;
-      }
+      if (ws.role !== "board" || !ws.boardId) return;
 
       const oldBoardId = ws.boardId;
       const b = boards.get(oldBoardId);
@@ -1621,10 +1620,7 @@ function handleMsg(ws, msg) {
       if (!b) return;
 
       if (b.companionWs) {
-        safeSend(b.companionWs, {
-          type: "kicked",
-        });
-
+        safeSend(b.companionWs, { type: "kicked" });
         b.companionWs.boardId = null;
         b.companionWs.role = null;
         b.companionWs = null;
@@ -1634,26 +1630,21 @@ function handleMsg(ws, msg) {
 
       if (b.primary) {
         b.lastActive = Date.now();
-
         safeSend(ws, {
           type: "primary_ready",
           boardId: b.boardId,
           primary: true,
           autoConnected: true,
         });
-
         savePrimaryState(b);
         break;
       }
 
-      // New code+secret
       boards.delete(oldBoardId);
 
       const newId = genBoardId();
       const newSecret = genSecret();
 
-      // Keep API messages associated with the physical
-      // board even though the pairing ID changes.
       moveApiMessages(oldBoardId, newId);
 
       b.boardId = newId;
@@ -1676,14 +1667,9 @@ function handleMsg(ws, msg) {
         secret: newSecret,
       });
 
-      console.log(
-        `Board kicked, new code: ${newId}`,
-      );
-
+      console.log(`Board kicked, new code: ${newId}`);
       break;
     }
-
-    // ── Board reconnects ──
 
     case "reconnect_board": {
       const id =
@@ -1697,24 +1683,14 @@ function handleMsg(ws, msg) {
       const b = boards.get(id);
 
       if (!b) {
-        safeSend(ws, {
-          type: "error",
-          message: "Board expired",
-        });
-
+        safeSend(ws, { type: "error", message: "Board expired" });
         return;
       }
 
       b.boardWs = ws;
       b.boardId = id;
       b.lastActive = Date.now();
-
-      // Make sure the board gets the combined message list
-      // after reconnecting.
-      b.messages = combineMessages(
-        b.baseMessages,
-        id,
-      );
+      b.messages = combineMessages(b.baseMessages, id);
 
       ws.boardId = id;
       ws.role = "board";
@@ -1733,22 +1709,12 @@ function handleMsg(ws, msg) {
         autoConnected: !!b.primary,
       });
 
-      if (b.primary) {
-        savePrimaryState(b);
-      }
+      if (b.primary) savePrimaryState(b);
 
-      safeSend(b.companionWs, {
-        type: "board_reconnected",
-      });
-
-      console.log(
-        `Board reconnected: ${id}`,
-      );
-
+      safeSend(b.companionWs, { type: "board_reconnected" });
+      console.log(`Board reconnected: ${id}`);
       break;
     }
-
-    // ── Forward companion → board commands ──
 
     case "update_settings":
     case "update_messages":
@@ -1757,15 +1723,9 @@ function handleMsg(ws, msg) {
     case "reset_board":
     case "flip_message":
     case "set_mode": {
-      if (
-        ws.role !== "companion" ||
-        !ws.boardId
-      ) {
-        return;
-      }
+      if (ws.role !== "companion" || !ws.boardId) return;
 
       const b = boards.get(ws.boardId);
-
       if (!b) return;
 
       b.lastActive = Date.now();
@@ -1783,17 +1743,8 @@ function handleMsg(ws, msg) {
         msg.type === "update_messages" &&
         typeof msg.messages === "string"
       ) {
-        // Keep the companion's messages separate from the
-        // home automation messages.
-        b.baseMessages =
-          msg.messages.slice(0, 10000);
-
-        // Send the combined list to the board.
-        b.messages = combineMessages(
-          b.baseMessages,
-          ws.boardId,
-        );
-
+        b.baseMessages = msg.messages.slice(0, 10000);
+        b.messages = combineMessages(b.baseMessages, ws.boardId);
         msg.messages = b.messages;
         savePrimaryState(b);
       }
@@ -1808,11 +1759,10 @@ function handleMsg(ws, msg) {
           msg.weatherPoint &&
           typeof msg.weatherPoint === "object"
         ) {
-          const point =
-            normalizeWeatherPoint(
-              msg.weatherPoint.latitude,
-              msg.weatherPoint.longitude,
-            );
+          const point = normalizeWeatherPoint(
+            msg.weatherPoint.latitude,
+            msg.weatherPoint.longitude,
+          );
 
           if (point) {
             b.weatherPoint = point;
@@ -1822,61 +1772,37 @@ function handleMsg(ws, msg) {
           }
         }
 
-        if (
-          typeof msg.weatherStation ===
-          "string"
-        ) {
-          b.weatherStation =
-            normalizeWeatherStation(
-              msg.weatherStation,
-            );
+        if (typeof msg.weatherStation === "string") {
+          b.weatherStation = normalizeWeatherStation(msg.weatherStation);
         }
 
-        msg.weatherStation =
-          b.weatherStation;
+        msg.weatherStation = b.weatherStation;
       }
 
       savePrimaryState(b);
       safeSend(b.boardWs, msg);
-
       break;
     }
 
     case "board_state": {
-      if (
-        ws.role !== "board" ||
-        !ws.boardId
-      ) {
-        return;
-      }
+      if (ws.role !== "board" || !ws.boardId) return;
 
       const b = boards.get(ws.boardId);
-
       if (!b) return;
 
       b.lastActive = Date.now();
-
       safeSend(b.companionWs, msg);
-
       break;
     }
   }
 }
 
-function completePairing(
-  b,
-  companionWs,
-  boardId,
-) {
-  // Replace existing companion if any
+function completePairing(b, companionWs, boardId) {
   if (
     b.companionWs &&
     b.companionWs !== companionWs
   ) {
-    safeSend(b.companionWs, {
-      type: "replaced",
-    });
-
+    safeSend(b.companionWs, { type: "replaced" });
     b.companionWs.boardId = null;
     b.companionWs.role = null;
   }
@@ -1885,13 +1811,7 @@ function completePairing(
   b.locked = true;
   b.lastActive = Date.now();
   b.pendingWs = null;
-
-  // Ensure the board's message state includes both
-  // companion messages and API messages.
-  b.messages = combineMessages(
-    b.baseMessages,
-    boardId,
-  );
+  b.messages = combineMessages(b.baseMessages, boardId);
 
   companionWs.boardId = boardId;
   companionWs.role = "companion";
@@ -1906,13 +1826,8 @@ function completePairing(
     weatherStation: b.weatherStation,
   });
 
-  safeSend(b.boardWs, {
-    type: "companion_joined",
-  });
-
-  console.log(
-    `Paired: ${boardId} (locked)`,
-  );
+  safeSend(b.boardWs, { type: "companion_joined" });
+  console.log(`Paired: ${boardId} (locked)`);
 }
 
 // ─────────────────────────────────────────────────────────────
