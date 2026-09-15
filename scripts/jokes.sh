@@ -18,14 +18,15 @@ if [[ -n "$SPLITFLAP_API_SECRET" ]]; then
   curl_args+=(--header "X-API-Secret: ${SPLITFLAP_API_SECRET}")
 fi
 
-JOKES_URL="https://api.humorapi.com/jokes/random?api-key=8714f823c27a4ad9a2fb9549940d2313&max-length=115&include-tags=one_liner&min-rating=7&exclude-tags=nsfw"
+JOKES_URL="https://api.humorapi.com/jokes/random?api-key=8714f823c27a4ad9a2fb9549940d2313&max-length=120&include-tags=one_liner&min-rating=7&exclude-tags=nsfw"
 
 joke=$(curl "${curl_args[@]}" "$JOKES_URL" | jq -r .joke | fold -s -w 22)
 
 payload=$(jq -n \
     --arg id "joke" \
     --arg text "$joke" \
-    '{id: $id, text: $text}')
+    --arg priority "low" \
+    '{id: $id, text: $text, priority: $priority}')
 
 curl "${curl_args[@]}" \
     --header "Content-Type: application/json" \
