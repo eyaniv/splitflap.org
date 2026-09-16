@@ -926,11 +926,21 @@
 
         return t;
       }
-      function flipToTarget(target, onDone) {
-        if (isFlipping) {
-          if (onDone) onDone();
-          return;
-        }
+      function flipToTarget(target, onDone, interrupt = false) {
+	    if (isFlipping) {
+		  if (!interrupt) {
+		    if (onDone) onDone();
+		    return;
+		  }
+	
+		  // Immediate message: interrupt the current animation, but keep the
+		  // existing sequence timer intact.
+		  cancelAnimLoop();
+		  isFlipping = false;
+		  animTarget = null;
+		  animDoneCb = null;
+	    }
+	
         isFlipping = true;
         const total = S.cols * S.rows;
         if (currentChars.length !== total) currentChars = blankGrid();
@@ -1765,7 +1775,7 @@
               break;
             case "flip_message":
               if (typeof msg.text === "string")
-                flipToTarget(messageToGrid(msg.text.toUpperCase()));
+                flipToTarget(messageToGrid(msg.text.toUpperCase()), null, true);
               break;
           }
         };
