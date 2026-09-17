@@ -694,6 +694,8 @@
         sequenceTimer = null,
         isFlipping = false,
         cellCache = [];
+      let immediateActive = false;
+      let immediateTimer = null;
       function parseMessages() {
         return messagesText
           .split(/\n---\n|\n---$|^---\n/)
@@ -926,74 +928,128 @@
 
         return t;
       }
-      function flipToTarget(target, onDone) {
-        if (isFlipping) {
-          if (onDone) onDone();
-          return;
-        }
-        isFlipping = true;
-        const total = S.cols * S.rows;
-        if (currentChars.length !== total) currentChars = blankGrid();
-        const changed = [];
-        for (let i = 0; i < total; i++)
-          if (currentChars[i] !== target[i]) changed.push(i);
-        if (!changed.length) {
-          isFlipping = false;
-          if (onDone) onDone();
-          return;
-        }
-        cancelAnimLoop();
-        animTarget = target;
-        animDoneCb = onDone || null;
-        animQueue = [];
-        let mx = 0;
-        changed.forEach((idx) => {
-          const e = buildCellSchedule(idx, currentChars[idx], target[idx]);
-          if (e > mx) mx = e;
-        });
-        scheduleAction(mx + 50, () => {});
-        startAnimLoop();
-      }
-		function playSequence() {
-		  stopLiveModes();
-		
-		  if (sequenceTimer) {
-			clearTimeout(sequenceTimer);
-			sequenceTimer = null;
-		  }
-		
-		  function go(i) {
-			// Re-read the current message list every time we advance.
-			const msgs = parseMessages();
-		
-			if (!msgs.length) return;
-		
-			if (i >= msgs.length) {
-			  if (S.loopSequence) {
-				sequenceTimer = setTimeout(() => go(0), S.msgDelay);
-			  }
-			  return;
+			function flipToTarget(target, onDone, interrupt = false) {
+			if (isFlipping) {
+				if (!interrupt) {
+				if (onDone) onDone();
+				return;
+				}
+			
+				// Immediate message: cancel the current animation and
+				// restore the board to the last completed message.
+				cancelAnimLoop();
+			
+				const cmap =
+				typeof COLOR_MAP !== "undefined" ? COLOR_MAP : colorMap;
+			
+				cellCache.forEach((c, idx) => {
+				if (!c) return;
+			
+				const ch = currentChars[idx] || " ";
+				const isColor = !!cmap[ch];
+			
+				const dc = isColor || ch === " " ? "" : ch;
+				const bg = isColor ? cmap[ch] : "";
+			
+				if (c.sTop) c.sTop.textContent = dc;
+				if (c.sBtm) c.sBtm.textContent = dc;
+				if (c.fTxt) c.fTxt.textContent = dc;
+			
+				if (c.topBg) c.topBg.style.background = bg;
+				if (c.botBg) c.botBg.style.background = bg;
+				if (c.fallBg) c.fallBg.style.background = bg;
+			
+				if (c.wrap) {
+					c.wrap.style.opacity = "0";
+					c.wrap.style.transform = "";
+			
+					if (c.wrap._anim) {
+					try {
+						c.wrap._anim.cancel();
+					} catch (_) {}
+					c.wrap._anim = null;
+					}
+				}
+				});
+			
+				isFlipping = false;
+				animTarget = null;
+				animDoneCb = null;
+			}	    
+					isFlipping = true;
+					const total = S.cols * S.rows;
+					if (currentChars.length !== total) currentChars = blankGrid();
+					const changed = [];
+					for (let i = 0; i < total; i++)
+						if (currentChars[i] !== target[i]) changed.push(i);
+					if (!changed.length) {
+						isFlipping = false;
+						if (onDone) onDone();
+						return;
+					}
+					cancelAnimLoop();
+					animTarget = target;
+					animDoneCb = onDone || null;
+					animQueue = [];
+					let mx = 0;
+					changed.forEach((idx) => {
+						const e = buildCellSchedule(idx, currentChars[idx], target[idx]);
+						if (e > mx) mx = e;
+					});
+					scheduleAction(mx + 50, () => {});
+					startAnimLoop();
+				}
+			function playSequence(startIndex = null) {
+				stopLiveModes();
+			
+				if (sequenceTimer) {
+				clearTimeout(sequenceTimer);
+				sequenceTimer = null;
+				}
+			
+				function go(i) {
+					// Re-read the current message list every time we advance.
+					const msgs = parseMessages();
+				
+					if (!msgs.length) return;
+				
+					if (i >= msgs.length) {
+						if (S.loopSequence) {
+						sequenceTimer = setTimeout(() => go(0), S.msgDelay);
+						}
+						return;
+					}
+				
+					currentMsgIdx = i;
+				
+					flipToTarget(messageToGrid(msgs[i]), () => {
+						sequenceTimer = setTimeout(() => {
+						if (!immediateActive) {
+							go(i + 1);
+						}
+						}, S.msgDelay);
+					});
+				}
+	
+				// Resume directly at the requested position.
+				// Do NOT blank the board.
+				if (startIndex !== null) {
+					go(startIndex);
+					return;
+				}
+			
+				if (currentMsgIdx !== -1) {
+					cancelAnimLoop();
+					isFlipping = false;
+					currentMsgIdx = -1;
+				
+					flipToTarget(blankGrid(), () => {
+						setTimeout(() => go(0), S.msgDelay);
+					});
+				} else {
+					go(0);
+				}
 			}
-		
-			currentMsgIdx = i;
-		
-			flipToTarget(messageToGrid(msgs[i]), () => {
-			  sequenceTimer = setTimeout(() => go(i + 1), S.msgDelay);
-			});
-		  }
-		
-		  if (currentMsgIdx !== -1) {
-			cancelAnimLoop();
-			isFlipping = false;
-			currentMsgIdx = -1;
-		
-			flipToTarget(blankGrid(), () => {
-			  setTimeout(() => go(0), S.msgDelay);
-			});
-		  } else {
-			go(0);
-		  }
-		}
       function flipToNext() {
         stopLiveModes();
         const msgs = parseMessages();
@@ -1763,10 +1819,52 @@
                 boardMode = "messages";
               }
               break;
-            case "flip_message":
-              if (typeof msg.text === "string")
-                flipToTarget(messageToGrid(msg.text.toUpperCase()));
-              break;
+						case "flip_message":
+							if (typeof msg.text === "string") {
+								// Remember where normal rotation should resume.
+								const msgs = parseMessages();
+								const resumeIndex =
+									msgs.length > 0
+										? (currentMsgIdx >= 0 ? (currentMsgIdx + 1) % msgs.length : 0)
+										: 0;
+						
+								// Stop the currently scheduled rotation.
+								if (sequenceTimer) {
+									clearTimeout(sequenceTimer);
+									sequenceTimer = null;
+								}
+						
+								// Cancel any previous immediate timer.
+								if (immediateTimer) {
+									clearTimeout(immediateTimer);
+									immediateTimer = null;
+								}
+						
+								immediateActive = true;
+						
+								// Show the immediate message now.
+								flipToTarget(
+									messageToGrid(msg.text.toUpperCase()),
+									null,
+									true
+								);
+						
+								// Hold the immediate message for 2 × normal display time.
+								immediateTimer = setTimeout(() => {
+									immediateTimer = null;
+									immediateActive = false;
+								
+									const currentMsgs = parseMessages();
+									if (!currentMsgs.length) return;
+								
+									const index = resumeIndex % currentMsgs.length;
+								
+									// Resume the normal sequence at the next message,
+									// without blanking or restarting at message 0.
+									playSequence(index);
+								}, S.msgDelay * 2);
+							}
+							break;
           }
         };
         ws.onclose = () => {
