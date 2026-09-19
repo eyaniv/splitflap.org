@@ -134,7 +134,11 @@ The mini preview parses the current message, splits it into a grid matching the 
 
 Returns all active boards, their ID, number of messages recieved via API and if there is a companion connected. primary board is the kiosk mode One
 
-#### POST /api/board/<BOARD ID>/messages
+Example:
+curl -X GET http://online:3000/api/health \
+  -H "X-API-Secret: my-secret"
+
+#### POST /api/board/:BOARDID/messages
 
 Adds a message to the board. payload is json, { id: "msgid", text: "message text", ttl: optional, time to live in seconds, priority: optional, low/medium/high/immediate}
 
@@ -144,26 +148,56 @@ An immediate priority message will disrupt the rotation, show on screen for 2x o
 
 If a message with the same ID already exists in rotation, the new message will replace the current one
 
-#### GET /api/board/BOARD ID/messages
+Example:
+payload=$(jq -n \
+    --arg id "welcome" \
+    --arg text "Hello World" \
+    --arg priority "low" \
+    --arg ttl "600" \
+    '{id: $id, text: $text, ttl: $ttl, priority: $priority}')
+
+curl -s -o /dev/null -X POST http://localhost:3000/api/board/LCL836/messages \
+  -H "Content-Type: application/json" \
+  -H "X-API-Secret: my-secret" \
+  -d "$payload"
+
+#### GET /api/board/:BOARDID/messages
 
 Show all API messages currently in rotation
 
-#### DELETE /api/board/BOARD ID/messages/MSGID
+Example:
+curl -s -X GET http://online:3000/api/board/LCL836/messages \
+  -H "X-API-Secret: my-secret"
+
+#### DELETE /api/board/:BOARDID/messages/:MSGID
 
 Remove the message with msgid from rotation
 
-#### POST /api/board/BOARD ID/next
+Example:
+curl -s -X DELETE http://online:3000/api/board/LCL836/messages/welcome \
+  -H "Content-Type: application/json" \
+  -H "X-API-Secret: my-secret"
+
+#### POST /api/board/:BOARDID/next
 
 Immidiately skip to the next message in the rotation
 
-#### GET /api/board/BOARD ID/play
+Example:
+curl -X POST http://online:3000/api/board/LCL836/next \
+  -H "X-API-Secret: my-secret"
+
+#### GET /api/board/:BOARDID/play
 
 Start the rotation (board launches in pause mode, this call will start playing the messages)
+
+Example:
+curl -X GET http://online:3000/api/board/LCL836/play \
+  -H "X-API-Secret: my-secret"
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/MohdYahyaMahmodi/splitflap.org.git
+git clone https://github.com/eyaniv/splitflap.org.git
 cd splitflap.org
 npm install
 node server.js
