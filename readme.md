@@ -57,6 +57,10 @@ weather slide is provided as well.
 
 Every visual parameter is adjustable from the companion in real time: flap dimensions, bezel radius, pinch depth, ridge styling, typography (family, size, weight, offsets), grid gap, board shadow, color gradients for top and bottom flaps, and 7 color emojis (🟥🟧🟨🟩🟦🟪⬜). The standalone `custom-board.html` lets you design flap aesthetics and export/import CSS without needing the server.
 
+### Kiosk Board
+
+In addition to the multiple boards that are dynamically created with every phone connection, A special, local board is automatically created for kiosk presentations. if the server is launched with this mode, then the first board connection will avoid showing the QR code connection screen, and will automatically connect to the local, kiosk mode board.
+
 ### Security
 
 Three layers, because the obvious question is "what if someone in the same room connects before you?"
@@ -124,6 +128,38 @@ Vanilla HTML/CSS/JS, optimized for mobile. Talks to the board exclusively throug
 
 The mini preview parses the current message, splits it into a grid matching the board dimensions, and re-renders on every keystroke.
 
+### API
+
+#### GET /api/health
+
+Returns all active boards, their ID, number of messages recieved via API and if there is a companion connected. primary board is the kiosk mode One
+
+#### POST /api/board/<BOARD ID>/messages
+
+Adds a message to the board. payload is json, { id: "msgid", text: "message text", ttl: optional, time to live in seconds, priority: optional, low/medium/high/immediate}
+
+A medium priority message will have on average about 2x of low screen time
+A high priority message will have on average about 2x of medium screen time
+An immediate priority message will disrupt the rotation, show on screen for 2x of message show time, then revert to high priority and the rotation will continue
+
+If a message with the same ID already exists in rotation, the new message will replace the current one
+
+#### GET /api/board/<ID>/messages
+
+Show all API messages currently in rotation
+
+#### DELETE /api/board/<BOARD ID>/messages/<MSGID>
+
+Remove the message with msgid from rotation
+
+#### POST /api/board/<BOARD ID>/next
+
+Immidiately skip to the next message in the rotation
+
+#### GET /api/board/<BOARD ID>/play
+
+Start the rotation (board launches in pause mode, this call will start playing the messages)
+
 ## Quick Start
 
 ```bash
@@ -160,9 +196,10 @@ Needs: CSS `clip-path: polygon()`, Web Animations API, Web Audio API, WebSocket.
 
 ### Environment Variables
 
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `PORT`   | `3000`  | Server port |
+| Variable               | Default | Description                                                                  |
+| ---------------------- | ------- | ---------------------------------------------------------------------------- |
+| `PORT`                 | `3000`  | Server port                                                                  |
+| `SPLITFLAP_API_SECRET` | none    | API secret key to include in the API request headers. Ignored if not defined |
 
 ### Board Defaults
 
@@ -171,7 +208,7 @@ The `S` object in `board.html` and `companion.html` holds all visual parameters.
 | Parameter      | Default | What it does                           |
 | -------------- | ------- | -------------------------------------- |
 | `cols`         | 22      | Grid columns                           |
-| `rows`         | 5       | Grid rows                              |
+| `rows`         | 6       | Grid rows                              |
 | `animDuration` | 360ms   | Final flip duration                    |
 | `fastSpeed`    | 25ms    | Speed per intermediate spool character |
 | `animStagger`  | 40ms    | Wave delay between adjacent cells      |
