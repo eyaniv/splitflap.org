@@ -144,19 +144,19 @@ An immediate priority message will disrupt the rotation, show on screen for 2x o
 
 If a message with the same ID already exists in rotation, the new message will replace the current one
 
-#### GET /api/board/<ID>/messages
+#### GET /api/board/BOARD ID/messages
 
 Show all API messages currently in rotation
 
-#### DELETE /api/board/<BOARD ID>/messages/<MSGID>
+#### DELETE /api/board/BOARD ID/messages/MSGID
 
 Remove the message with msgid from rotation
 
-#### POST /api/board/<BOARD ID>/next
+#### POST /api/board/BOARD ID/next
 
 Immidiately skip to the next message in the rotation
 
-#### GET /api/board/<BOARD ID>/play
+#### GET /api/board/BOARD ID/play
 
 Start the rotation (board launches in pause mode, this call will start playing the messages)
 
