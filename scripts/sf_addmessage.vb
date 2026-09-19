@@ -77,6 +77,7 @@ Sub Main(ByVal parms As Object)
     Dim patternc As String = "\$\$DCR:\((?<ref>\d+)\):" ' extract device value, and convert to celsius
     Dim patternh As String = "\$\$DHR:\((?<ref>\d+)\):" ' extract device string and reverse Hebrew
     Dim patternw As String = "\$\$DWR:\((?<ref>\d+)\):" ' extract device string with word wrap
+    Dim patterno As String = "\$\$DOR:\((?<ref>\d+)\):" ' extract device last change date OR time
 
 	' msgtxt contains the message to the board, but we need to expand all patterns, and create line brakes
 
@@ -158,7 +159,20 @@ Sub Main(ByVal parms As Object)
                 Return WordWrap(Regex.Replace(cleanHTMLTags, "[^\w\s:.\-_]", ""),22) ' Fixed unescaped hyphen in character class
             End Function)
 
-            msgtxt = msgtxt & result7
+            ' Calculate the replaced string with device last change date OR time
+            Dim result8 As String = Regex.Replace(result7, patterno, Function(m As Match)
+                Dim refValue As Integer = Integer.Parse(m.Groups("ref").Value)
+                Dim lastchangedate as Date = hs.DeviceLastChangeRef(refValue)
+                Dim hoursOld = DateDiff("h", lastchangedate, Now)
+                If hoursOld > 36 Then
+                	Return lastchangedate.ToString("MMM-d")
+                Else
+                	Return lastchangedate.ToString("h:mm tt")
+				End If
+				
+            End Function)
+
+            msgtxt = msgtxt & result8
             firstline = False
         Catch ex As Exception
             hs.WriteLog("Script Error", "Error processing string line [" & ln & "]: " & ex.Message)
