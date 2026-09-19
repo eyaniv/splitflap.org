@@ -59,7 +59,15 @@ Every visual parameter is adjustable from the companion in real time: flap dimen
 
 ### Kiosk Board
 
-In addition to the multiple boards that are dynamically created with every phone connection, A special, local board is automatically created for kiosk presentations. if the server is launched with this mode, then the first board connection will avoid showing the QR code connection screen, and will automatically connect to the local, kiosk mode board.
+Kiosk Board (referred to as primary board in the code) is a special board for always on displays. It is created automatically upon connection, and unlike the rest of the boards, does not expire after 24 hours.
+
+If there is a kiosk Board, the first board.html connection will avoid showing the QR code connection screen, and will automatically connect to the kiosk board.
+
+I will add an environment variable option to turn on or off the kiosk mode board, and change it's ID.
+
+As of now, Kiosk Mode board is always created, and it's ID is LCL836
+
+All other boards are created on demand, and will expire in 24 hours. according to the In addition to the multiple boards that are dynamically created with every phone connection, A special, local board is automatically created for kiosk presentations. if the server is launched with this mode, then the first board connection will avoid showing the QR code connection screen, and will automatically connect to the local, kiosk mode board.
 
 ### Security
 
@@ -135,8 +143,10 @@ The mini preview parses the current message, splits it into a grid matching the 
 Returns all active boards, their ID, number of messages recieved via API and if there is a companion connected. primary board is the kiosk mode One
 
 Example:
+```bash
 curl -X GET http://online:3000/api/health \
-  -H "X-API-Secret: my-secret"
+  -H "X-API-Secret: my-secret"`
+```
 
 #### POST /api/board/:BOARDID/messages
 
@@ -148,7 +158,17 @@ An immediate priority message will disrupt the rotation, show on screen for 2x o
 
 If a message with the same ID already exists in rotation, the new message will replace the current one
 
+If the ttl is omitted, the message will rotate forever, or until deleted with DELETE API call
+
+If priority is omitted, or the value do not match the permitted values above the message will be added with a normal priority. 
+
+Priority field is NOT case sensitive
+
+The text field can contain JSON encoded emojis or new lines.
+For example, new line is \\n. Red and Green blocks are \\ud83d\\udfe9 and \\uD83D\\uDFE5
+
 Example:
+```bash
 payload=$(jq -n \
     --arg id "welcome" \
     --arg text "Hello World" \
@@ -159,40 +179,49 @@ payload=$(jq -n \
 curl -s -o /dev/null -X POST http://localhost:3000/api/board/LCL836/messages \
   -H "Content-Type: application/json" \
   -H "X-API-Secret: my-secret" \
-  -d "$payload"
+  -d "$payload"`
+```
 
 #### GET /api/board/:BOARDID/messages
 
 Show all API messages currently in rotation
 
 Example:
+```bash
 curl -s -X GET http://online:3000/api/board/LCL836/messages \
-  -H "X-API-Secret: my-secret"
+  -H "X-API-Secret: my-secret"`
+```
 
 #### DELETE /api/board/:BOARDID/messages/:MSGID
 
 Remove the message with msgid from rotation
 
 Example:
+```bash
 curl -s -X DELETE http://online:3000/api/board/LCL836/messages/welcome \
   -H "Content-Type: application/json" \
-  -H "X-API-Secret: my-secret"
+  -H "X-API-Secret: my-secret"`
+```
 
 #### POST /api/board/:BOARDID/next
 
-Immidiately skip to the next message in the rotation
+Immediately skip to the next message in the rotation
 
 Example:
+```bash
 curl -X POST http://online:3000/api/board/LCL836/next \
-  -H "X-API-Secret: my-secret"
+  -H "X-API-Secret: my-secret"`
+```
 
 #### GET /api/board/:BOARDID/play
 
 Start the rotation (board launches in pause mode, this call will start playing the messages)
 
 Example:
+```bash
 curl -X GET http://online:3000/api/board/LCL836/play \
-  -H "X-API-Secret: my-secret"
+  -H "X-API-Secret: my-secret"`
+```
 
 ## Quick Start
 
