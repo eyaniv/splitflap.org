@@ -418,6 +418,8 @@ async function main() {
 	  (a, b) => dateOf(a.start) - dateOf(b.start)
 	);
 	
+	// Added a message removal logic if there are no events, but kept the
+	// Message building logic here for debug printing. will refactor later
 	let message = `\n${correctedEvents.length} events `;
 	
 	if (offset) {
@@ -458,10 +460,17 @@ async function main() {
   if (debugMode) {
     console.log(`\n${message}`);
   } else {
-    spawn(`/opt/calendar/messages.sh`, [
-      `events${offset}`,
-      message
-    ]);
+    if (correctedEvents.length) {
+		 spawn(`/opt/commands/messages.sh`, [
+		  `events${offset}`,
+		  message
+		]);
+	} else {
+		 spawn(`/opt/commands/delmessage.sh`, [
+		  `events${offset}`
+		]);
+	}
+	
   }
 }
 
