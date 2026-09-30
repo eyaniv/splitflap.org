@@ -32,30 +32,29 @@ Sub Main(ByVal parms As Object)
     End Try
 
     ' Debug checkpoint
-    'hs.WriteLog("Script Debug", "Received raw input string: " & inputStr)
+    ' hs.WriteLog("Script Debug", "Received raw input string: " & inputStr)
 
     ' 2. Split multiple parameters separated by a pipe (|)
     Dim parts As String() = inputStr.Split("|"c)
     
     ' we have more than one parameter, in the form of id|text|ttl-priority
-    ' ttl=priority can be either optional, so 120 or 120- or 120-high or -high are all legal
+    ' ttl=priority can be either optional, so 120 or 120- or 120-high or -high are all valid
     If parts.Length >= 2 Then
         msgid = parts(0).Trim()
         msgtxt = parts(1)
-        'If parts.Length >= 3 AndAlso IsNumeric(parts(2)) Then
         If parts.Length >= 3 Then
         	Dim ttlpri As String = parts(2).ToString()
-        	hs.WriteLog("Script Debug", "In ttl-pri presplit " & ttlpri)
+        	' hs.WriteLog("Script Debug", "In ttl-pri presplit " & ttlpri)
         	Dim ttlpriParts As String() = ttlpri.Split("-")
-        	hs.WriteLog("Script Debug", "In ttl-pri section " & ttlpriParts.Length)
+        	' hs.WriteLog("Script Debug", "In ttl-pri section " & ttlpriParts.Length)
         	If ttlpriParts.Length > 0 Then
-        	hs.WriteLog("Script Debug", "In ttl section " & ttlpriParts(0))
+        	' hs.WriteLog("Script Debug", "In ttl section " & ttlpriParts(0))
         		If (Not String.IsNullOrEmpty(ttlpriParts(0))) AndAlso IsNumeric(ttlpriParts(0)) Then
         			ttl = CInt(ttlpriParts(0))
         		End If ' at least one parameter - assign to TTL
         	End If
         	If ttlpriParts.Length > 1 Then
-	        	hs.WriteLog("Script Debug", "In pri section " & ttlpriParts(1))
+	        	' hs.WriteLog("Script Debug", "In pri section " & ttlpriParts(1))
         		If Not String.IsNullOrEmpty(ttlpriParts(1)) Then
         			priority = ttlpriParts(1).ToString()
         		End If ' at least 2 parameters, assign to priority
@@ -150,7 +149,7 @@ Sub Main(ByVal parms As Object)
                 Return ReverseHebrewOnly(Regex.Replace(cleanHTMLTags, "[^\w\s:.\-_]", "")) ' Fixed unescaped hyphen in character class
             End Function)
 
-            ' Calculate the replaced string with device strings, and flip Hebrew
+            ' Calculate the replaced string with device strings, and word wrap
             Dim result7 As String = Regex.Replace(result6, patternw, Function(m As Match)
                 Dim refValue As Integer = Integer.Parse(m.Groups("ref").Value)
                 Dim devStr As String = hs.DeviceString(refValue)
@@ -187,9 +186,9 @@ Sub Main(ByVal parms As Object)
     If ttl > 0 Then
         payload = payload & ", ""ttl"": " & ttl
     End If
-    'If priority <> "normal" Then
-        payload = payload & ", ""priority"": """ & priority & """"
-    'End If
+
+    payload = payload & ", ""priority"": """ & priority & """"
+
     payload = payload & "}"
     
     hs.WriteLog("Script Debug", "Sending JSON Payload: " & payload)

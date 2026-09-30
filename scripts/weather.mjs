@@ -25,6 +25,11 @@ const url = `https://api.open-meteo.com/v1/forecast?latitude=${LATITUDE}&longitu
  *
  * max_value is the maximum value across each period.
  */
+ 
+function f2c(fahrenheit) {
+  return (fahrenheit - 32) * 5 / 9;
+}
+
 function hourly_find(dayarray, minvalue) {
   const periods = [];
 
@@ -191,12 +196,12 @@ function weather_rule_book(data) {
     const temperatureSwing =
       afternoonMax.value - morningMin.value;
 
-    if (morningMin.value < 55) {
+    if (morningMin.value < 50) {
       messages.push({
         priority: 40,
         text: `JACKET THIS MORNING`
       });
-    } else if (morningMin.value < 65) {
+    } else if (morningMin.value < 62) {
       messages.push({
         priority: 30,
         text: `LIGHT LAYER IN MORNING`
@@ -214,7 +219,7 @@ function weather_rule_book(data) {
       });
     }
 
-    if (afternoonMax.value >= 90) {
+    if (afternoonMax.value >= 88) {
       messages.push({
         priority: 60,
         text: `HOT THIS AFTERNOON`
@@ -273,7 +278,7 @@ function weather_rule_book(data) {
 
   const uv = hourly_find(
     hourly.uv_index,
-    3
+    5
   );
 
   if (uv.found) {
@@ -284,7 +289,7 @@ function weather_rule_book(data) {
       23
     );
 
-    if (strongestUV.value >= 6) {
+    if (strongestUV.value >= 7) {
       messages.push({
         priority: 60,
         text: `STRONG UV ${periodText(uv.periods[0])}`
@@ -311,7 +316,7 @@ function weather_rule_book(data) {
 
   const wind = hourly_find(
     hourly.wind_speed_10m,
-    20
+    25
   );
 
   if (wind.found) {
@@ -337,11 +342,25 @@ function weather_rule_book(data) {
 
     const minTemp =
       daily.temperature_2m_min[0];
-
+      
+    const curTempF = 
+      Math.round(data.current.temperature_2m);
+    
+    const curTempC = 
+    	Math.round(f2c(data.current.temperature_2m));
+      
+    /*
     messages.push({
       priority: 5,
       text: `TODAY'S: ${minTemp}°-${maxTemp}°`
     });
+    */
+
+    messages.push({
+      priority: 5,
+      text: `NOW: ${curTempF}F ${curTempC}C`
+    });
+    
   }
 
 
@@ -415,16 +434,6 @@ async function fetchWeather() {
     		boardMessage += `${item.text}\n`;
     	});
 
-	//const sortedMessages = Object.values(messages).sort((x, y) => x.priority - y.priority);
-
-
-    //for (const message of sortedMessages) {
-    //  console.log(
-	//    `[${message.priority}] ${message.text}`
-    //  );
-    //}
-
-
     return boardMessage;
 
 
@@ -440,12 +449,49 @@ async function fetchWeather() {
 
 async function main() {
 
+  const args = process.argv.slice(2);
+  let priority = "normal";
+  let debugMode = 0;
+
+  // usage: node weather.mjs <priority> <debug mode>
+
+  if (args[1] !== undefined) {
+    const parsedValue = Number.parseInt(args[1], 10);
+    const isInteger =
+      !Number.isNaN(parsedValue) && String(parsedValue) === args[1];
+
+    if (isInteger) {
+      debugMode = parsedValue;
+
+      if (debugMode) {
+        console.log(`Running in debug mode`);
+      }
+    }
+  }
+
+  if (args[0] !== undefined) {
+	priority = args[0];
+
+    if (debugMode) {
+      console.log(
+        `Weather rules will be published as ${priority}`
+      );
+    }
+  }
+
   const messages = await fetchWeather();
 
+  if (debugMode) {
+      console.log(
+        `\nDebug:\n${messages}`
+      );
+  } else {
   spawn(`/opt/commands/messages.sh`, [
       "whattodo",
-      messages
+      messages,
+      priority
     ]);
+  }
 }
 
 main().catch(error => {
